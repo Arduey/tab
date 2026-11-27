@@ -1,0 +1,115 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  linux:
+    name: Linux x86_64 (musl, static)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: 安装 musl 工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-x86_64
+
+      - name: 构建
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AR_x86_64_unknown_linux_musl: ar
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: 检查产物
+        run: |
+          set -e
+          BIN=target/x86_64-unknown-linux-musl/release/tab
+          ls -lh "$BIN"
+          file "$BIN"
+          if file "$BIN" | grep -qi "dynamically linked"; then
+            echo "::error::产物不是静态链接"
+            exit 1
+          fi
+          cp "$BIN" tab-linux-x86_64
+          chmod +x tab-linux-x86_64
+          ./tab-linux-x86_64 --version
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: tab-linux-x86_64
+          path: tab-linux-x86_64
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tab-linux-x86_64
+          generate_release_notes: true
+
+  docker:
+    name: Docker image (ghcr.io)
+    runs-on: ubuntu-22.04
+    needs: linux
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 Linux 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: tab-linux-x86_64
+          path: .
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
