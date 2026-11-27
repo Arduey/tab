@@ -15,7 +15,7 @@ jobs:
     name: Linux x86_64 (musl, static)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
@@ -34,6 +34,10 @@ jobs:
 
       - name: 构建
         env:
+          # musl 下必须显式要求静态 C 运行时。
+          # 不加的话 Ubuntu 的 musl-gcc 会产出 PIE（interpreter
+          # /lib/ld-musl-x86_64.so.1），目标机上没这个文件就跑不起来。
+          RUSTFLAGS: -C target-feature=+crt-static
           CC_x86_64_unknown_linux_musl: musl-gcc
           AR_x86_64_unknown_linux_musl: ar
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
@@ -45,16 +49,27 @@ jobs:
           BIN=target/x86_64-unknown-linux-musl/release/tab
           ls -lh "$BIN"
           file "$BIN"
-          if file "$BIN" | grep -qi "dynamically linked"; then
+
+          # 必须满足：statically linked，且不能是 PIE
+          # （PIE 会带 interpreter /lib/ld-musl-*.so.1，跨发行版会挂）
+          if ! file "$BIN" | grep -q "statically linked"; then
             echo "::error::产物不是静态链接"
             exit 1
           fi
+          if file "$BIN" | grep -qi "pie executable"; then
+            echo "::error::产物是 PIE，目标机可能缺少 musl 动态加载器"
+            exit 1
+          fi
+
           cp "$BIN" tab-linux-x86_64
           chmod +x tab-linux-x86_64
-          ./tab-linux-x86_64 --version
+
+          # 最实在的验证：能在这台 Linux 上真的跑起来并输出正确的版本号
+          ./tab-linux-x86_64 --version | tee /tmp/ver.txt
+          grep -q "^tab " /tmp/ver.txt
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tab-linux-x86_64
           path: tab-linux-x86_64
@@ -76,10 +91,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 下载 Linux 产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tab-linux-x86_64
           path: .
