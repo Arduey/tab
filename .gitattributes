@@ -1,0 +1,8 @@
+# 源码统一用 LF：这个项目主要在 Linux 上编译运行，
+# 也避免 Windows 上检出后 CRLF 混进容器构建。
+* text=auto eol=lf
+
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
