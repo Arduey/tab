@@ -1,28 +1,28 @@
-# syntax=docker/dockerfile:1
+# 镜像只装「已经编译好的静态二进制」，不在容器里编译 Rust。
+#
+# 为什么这么做：
+#  1. CI 产出的 x86_64-unknown-linux-musl 是静态链接，不依赖 glibc，
+#     Alpine / Debian / CentOS 都能直接跑；
+#  2. 与宝塔上手动部署用的是同一个文件，行为完全一致，出问题好对照；
+#  3. 镜像从 ~800MB 降到 ~20MB，构建从十几分钟降到几秒。
+#
+# 需要自己从源码构建镜像时（没有 CI 产物）：
+#   docker build --build-arg BIN=./target/x86_64-unknown-linux-musl/release/tab -t tab .
 
-# ---------- 构建 ----------
-FROM rust:1-slim-bookworm AS build
-WORKDIR /src
+FROM alpine:3.20
 
-# 依赖单独缓存一层，改代码不用重装依赖
-COPY Cargo.toml Cargo.lock* ./
-RUN mkdir -p src && echo 'fn main(){}' > src/main.rs \
- && cargo build --release --locked 2>/dev/null || cargo build --release
-RUN rm -rf src
+# ca-certificates：抓取网站 favicon 走 HTTPS 必须有根证书
+# tzdata：日志时间戳按本地时区显示
+RUN apk add --no-cache ca-certificates tzdata \
+ && addgroup -g 10001 -S tab \
+ && adduser -u 10001 -S -G tab -h /data tab \
+ && mkdir -p /data \
+ && chown -R tab:tab /data
 
-COPY src ./src
-COPY web ./web
-# 源码时间戳变化需要强制重建二进制本身
-RUN touch src/main.rs && cargo build --release
-
-# ---------- 运行 ----------
-FROM debian:bookworm-slim
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/* \
- && useradd -r -u 10001 -m -d /data tab
-
-COPY --from=build /src/target/release/tab /usr/local/bin/tab
+# 允许用 --build-arg 指定产物路径，默认取 CI 下载的位置
+ARG BIN=tab-linux-x86_64
+COPY ${BIN} /usr/local/bin/tab
+RUN chmod +x /usr/local/bin/tab
 
 ENV TAB_DATA_DIR=/data \
     TAB_BIND=0.0.0.0 \
@@ -34,7 +34,8 @@ EXPOSE 8080
 USER tab
 WORKDIR /data
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+# 二进制自带 --health：连一下本机端口就返回，不依赖 curl
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD ["/usr/local/bin/tab", "--health"]
 
 ENTRYPOINT ["/usr/local/bin/tab"]

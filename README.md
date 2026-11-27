@@ -23,9 +23,18 @@
 
 ## 宝塔部署（推荐：二进制 + 守护进程）
 
-1. 在服务器上新建站点目录，例如 `/www/wwwroot/tab`，把 `tab`（Linux 版二进制）
-   上传进去，`chmod +x tab`。
-   > 需要自己编译时：`cargo build --release`，产物在 `target/release/tab`。
+📖 **完整步骤见 [docs/DEPLOY-BAOTA.md](docs/DEPLOY-BAOTA.md)** —— 含权限设置、Supervisor 配置、
+Nginx 反向代理、HTTPS、升级与回滚、排错表。下面是快速版：
+
+1. 把 Linux 静态二进制放到数据目录 `/www/wwwroot/tab-data/`，重命名为 `tab`，
+   权限 `755`、属主 `www`。
+   | 获取方式 | 说明 |
+   |---|---|
+   | GitHub Actions | 每次推 `main` 产出 `tab-linux-x86_64` 产物；打 `v*` tag 会自动发 Release |
+   | 本地交叉编译 | `rustup target add x86_64-unknown-linux-musl` 后 `cargo build --release --target x86_64-unknown-linux-musl`（需 musl 工具链） |
+   | 本机原生编译 | `cargo build --release`，产物 `target/release/tab` |
+
+   产物是 **musl 静态链接**，不依赖 glibc，CentOS 7 到 Debian 12 通用。
 2. 宝塔面板 → **网站 → 添加站点**，域名填你的域名，PHP 选「纯静态」。
 3. 网站设置 → **反向代理 → 添加反向代理**：
    - 目标 URL：`http://127.0.0.1:8080`
@@ -35,19 +44,23 @@
    ```nginx
    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
    proxy_set_header X-Real-IP $remote_addr;
+   proxy_set_header X-Forwarded-Proto $scheme;
    proxy_http_version 1.1;
+   proxy_read_timeout 120s;   # 导入大量书签时抓图标会慢，别让它超时
    ```
 
 5. 用宝塔的 **Supervisor 管理器** 守护进程：
    - 名称：`tab`
-   - 运行目录：`/www/wwwroot/tab`
-   - 启动命令：`/www/wwwroot/tab/tab`
+   - 运行目录：`/www/wwwroot/tab-data`
+   - 启动命令：`/www/wwwroot/tab-data/tab`
    - 进程数量：1
-   - 环境变量（可选）：`TAB_PORT=8080`、`TAB_DATA_DIR=/www/wwwroot/tab/data`
+   - 环境变量：`TAB_PORT=8080`、`TAB_BIND=127.0.0.1`、
+     `TAB_DATA_DIR=/www/wwwroot/tab-data`
 6. 浏览器打开域名 → 自动跳到安装向导 → 填站点名、用户名、密码 → 完成。
    安装完成后 `/install` 会永久失效。
 
-反向代理方式由 Nginx 终结 HTTPS，二进制只监听 8080，升级时替换文件并重启进程即可。
+反向代理方式由 Nginx 终结 HTTPS，二进制只监听 127.0.0.1:8080，
+外网无需放行该端口。升级时替换文件并在 Supervisor 里重启即可。
 
 ## Docker 部署
 
